@@ -52,7 +52,7 @@ Datum train_internal(PG_FUNCTION_ARGS) {
         initStringInfo(&query);
         appendStringInfo(&query, 
                          "INSERT INTO recsys.item_embeddings (model_id, item_id, embedding) "
-                         "VALUES (%d, %s, '[", 
+                         "VALUES (%d, '%s', '[", 
                          model_id, item_id_str);
 
         for (int j = 0; j < 128; j++) {

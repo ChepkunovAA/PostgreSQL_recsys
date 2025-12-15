@@ -1,4 +1,8 @@
+DROP EXTENSION IF EXISTS recsys;
+CREATE EXTENSION IF NOT EXISTS recsys;
+
 -- Пример использования расширения
+DROP TABLE IF EXISTS user_item;
 CREATE TABLE user_item (
     user_id TEXT,
     item_id TEXT,
@@ -28,4 +32,4 @@ SELECT * FROM recsys.user_item_recommend(
 );
 
 -- Item-to-item рекомендации
-SELECT * FROM recsys.item_item_recommend(1, 'itemA', 5);
+SELECT * FROM recsys.item_item_recommend(1, 'itemA', 2);

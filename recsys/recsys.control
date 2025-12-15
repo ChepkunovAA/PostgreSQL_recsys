@@ -1,0 +1,5 @@
+comment = 'Transformer-based in-database reccomendation system'
+default_version = '0.1'
+module_pathname = '$libdir/recsys'
+relocatable = true
+requires = 'vector'

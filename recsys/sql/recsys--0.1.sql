@@ -2,27 +2,12 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE SCHEMA recsys;
 
-CREATE TYPE ModelConfig;
-
-CREATE FUNCTION ModelConfig_in(cstring) RETURNS ModelConfig
-	AS 'recsys', 'ModelConfig_in' LANGUAGE C IMMUTABLE STRICT;
-
-CREATE FUNCTION ModelConfig_out(ModelConfig) RETURNS cstring
-	AS 'recsys', 'ModelConfig_out' LANGUAGE C IMMUTABLE STRICT;
-
-CREATE TYPE ModelConfig (
-    INTERNALLENGTH = 256,
-    INPUT = ModelConfig_in,
-    OUTPUT = ModelConfig_out
-);
-
 CREATE TYPE Status AS ENUM ('untrained', 'training', 'ready', 'failed');
 
 -- Таблица для хранения информации о моделях
 CREATE TABLE recsys.models (
     model_id SERIAL PRIMARY KEY,
     model_status Status DEFAULT 'untrained',
-    model_config ModelConfig DEFAULT NULL,
 
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -32,7 +17,7 @@ CREATE TABLE recsys.models (
 CREATE TABLE recsys.item_embeddings (
     embedding_id SERIAL PRIMARY KEY,
     model_id INTEGER NOT NULL REFERENCES recsys.models ON DELETE CASCADE,
-    item_id TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
     embedding vector(128),
     
     generated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -179,6 +164,7 @@ CREATE OR REPLACE FUNCTION recsys.train(
     dataset_name TEXT,
     user_column TEXT,
     item_column TEXT,
+    order_column TEXT,
     target_model_id INTEGER
 )
 RETURNS VOID
@@ -193,7 +179,7 @@ BEGIN
     PERFORM recsys._check_table_exists(dataset_name);
     
     -- Проверяем существование столбцов
-    PERFORM recsys._check_columns_exist(dataset_name, ARRAY[user_column, item_column]);
+    PERFORM recsys._check_columns_exist(dataset_name, ARRAY[user_column, item_column, order_column]);
 
     -- Проверяем существование модели и её статус
     model_status_value := recsys._check_model(target_model_id);
@@ -203,9 +189,7 @@ BEGIN
         RAISE EXCEPTION 'Модель уже обучается';
     END IF;
     IF model_status_value = 'ready' THEN
-        RAISE NOTICE 'Модель уже обучена';
-        DELETE FROM recsys.item_embeddings
-        WHERE model_id = target_model_id;
+        RAISE EXCEPTION 'Модель уже обучена';
     END IF;
     
     -- Обновляем статус модели на "training"
@@ -215,7 +199,7 @@ BEGIN
     WHERE model_id = target_model_id;
     
     -- Вызываем C-функцию для обучения
-    PERFORM recsys.train_internal(dataset_name, user_column, item_column, target_model_id);
+    PERFORM recsys.train_internal(dataset_name, user_column, item_column, order_column, target_model_id);
         
 EXCEPTION 
     WHEN OTHERS THEN
@@ -229,11 +213,12 @@ EXCEPTION
 END;
 $$;
 
--- Объявляем функцию, которая будет реализована в C-расширении
+-- Объявляем внутреннюю C-функцию для запуска обучения модели
 CREATE OR REPLACE FUNCTION recsys.train_internal(
     dataset_table TEXT,
     user_column TEXT,
     item_column TEXT,
+    order_column TEXT,
     model_id INTEGER
 )
 RETURNS VOID
@@ -244,10 +229,11 @@ AS 'recsys', 'train_internal';
 -- Функция для получения user-to-item рекомендаций с использованием обученной модели
 CREATE OR REPLACE FUNCTION recsys.user_item_recommend(
     target_model_id INTEGER,
-    target_user_id TEXT,
+    target_user_id INTEGER,
     dataset_name TEXT,
-    user_column TEXT DEFAULT 'user_id',
-    item_column TEXT DEFAULT 'item_id',
+    user_column TEXT,
+    item_column TEXT,
+    order_column TEXT,
     top_k INTEGER DEFAULT 10,
     min_score FLOAT DEFAULT 0.0
 )
@@ -262,7 +248,7 @@ BEGIN
     PERFORM recsys._check_table_exists(dataset_name);
     
     -- Проверяем существование столбцов
-    PERFORM recsys._check_columns_exist(dataset_name, ARRAY[user_column, item_column]);
+    PERFORM recsys._check_columns_exist(dataset_name, ARRAY[user_column, item_column, order_column]);
 
     -- Проверяем существование модели и её статус
     PERFORM recsys._check_model(target_model_id, 'ready');
@@ -274,6 +260,7 @@ BEGIN
         dataset_name,
         user_column,
         item_column,
+        order_column,
         top_k,
         min_score
     );  
@@ -283,10 +270,11 @@ $$;
 -- Объявляем внутреннюю C-функцию для генерации рекомендаций
 CREATE OR REPLACE FUNCTION recsys.recommend_internal(
     model_id INTEGER,
-    user_id TEXT,
+    user_id INTEGER,
     dataset_name TEXT,
     user_column TEXT,
     item_column TEXT,
+    order_column TEXT,
     top_k INTEGER,
     min_score FLOAT
 )
@@ -300,12 +288,12 @@ AS 'recsys', 'recommend_internal';
 -- Функция для получения item-to-item рекомендаций с использованием обученной модели
 CREATE OR REPLACE FUNCTION recsys.item_item_recommend(
     target_model_id INTEGER,
-    target_item_id TEXT,
+    target_item_id INTEGER,
     top_k INTEGER DEFAULT 10,
     min_similarity FLOAT DEFAULT 0.0
 )
 RETURNS TABLE(
-    recommended_item_id TEXT,
+    recommended_item_id INTEGER,
     similarity FLOAT
 )
 LANGUAGE plpgsql
@@ -333,7 +321,7 @@ BEGIN
     CROSS JOIN filtred_embeddings e2
     WHERE e1.item_id = target_item_id
         AND e2.item_id != target_item_id
-        AND similarity > min_similarity
+        AND 1 - (e1.embedding <=> e2.embedding) > min_similarity
     ORDER BY e1.embedding <=> e2.embedding
     LIMIT top_k;
 END;
